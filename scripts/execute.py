@@ -422,7 +422,7 @@ class StepExecutor:
                     # 해석 못 한 헤더를 건너뛰면 그 파일의 억제 주석이 조용히 통과한다
                     return (
                         "diff 헤더를 해석할 수 없어 억제 주석을 검사하지 못함 — "
-                        f"파일명에 따옴표·탭·백슬래시가 있으면 이름을 바꿔라: {line}"
+                        f"파일명에 따옴표·백슬래시·제어 문자(탭·줄바꿈 등)가 있으면 이름을 바꿔라: {line}"
                     )
             elif line.startswith("@@"):
                 in_header = False
