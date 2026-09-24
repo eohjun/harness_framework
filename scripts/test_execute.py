@@ -25,12 +25,12 @@ import execute as ex
 
 @pytest.fixture
 def tmp_project(tmp_path):
-    """phases/, CLAUDE.md, docs/ 를 갖춘 임시 프로젝트 구조."""
+    """phases/, AGENTS.md, docs/ 를 갖춘 임시 프로젝트 구조."""
     phases_dir = tmp_path / "phases"
     phases_dir.mkdir()
 
-    claude_md = tmp_path / "CLAUDE.md"
-    claude_md.write_text("# Rules\n- rule one\n- rule two")
+    rules = tmp_path / "AGENTS.md"
+    rules.write_text("# Rules\n- rule one\n- rule two")
 
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
@@ -150,7 +150,7 @@ class TestJsonHelpers:
 
 
 class TestLoadGuardrails:
-    def test_loads_claude_md_and_docs(self, executor, tmp_project):
+    def test_loads_agents_md_and_docs(self, executor, tmp_project):
         with patch.object(ex, "ROOT", tmp_project):
             result = executor._load_guardrails()
         assert "# Rules" in result
@@ -170,11 +170,11 @@ class TestLoadGuardrails:
         guide_pos = result.index("guide")
         assert arch_pos < guide_pos
 
-    def test_no_claude_md(self, executor, tmp_project):
-        (tmp_project / "CLAUDE.md").unlink()
+    def test_no_agents_md(self, executor, tmp_project):
+        (tmp_project / "AGENTS.md").unlink()
         with patch.object(ex, "ROOT", tmp_project):
             result = executor._load_guardrails()
-        assert "CLAUDE.md" not in result
+        assert "AGENTS.md" not in result
         assert "Architecture" in result
 
     def test_no_docs_dir(self, executor, tmp_project):
@@ -689,7 +689,7 @@ class TestRunAc:
         assert executor._run_ac("true\n") is None
 
     def test_runs_in_project_root(self, executor, tmp_project):
-        assert executor._run_ac("test -f CLAUDE.md\n") is None
+        assert executor._run_ac("test -f AGENTS.md\n") is None
 
     def test_earlier_failure_is_not_masked(self, executor):
         err = executor._run_ac("false\ntrue\n")
@@ -726,7 +726,7 @@ class TestCheckCleanTree:
             "-m",
             "init",
         )
-        git("add", "CLAUDE.md", "docs")
+        git("add", "AGENTS.md", "docs")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "docs")
         return tmp_project
 
@@ -740,7 +740,7 @@ class TestCheckCleanTree:
         assert exc_info.value.code == 1
 
     def test_modified_tracked_file_exits(self, executor, repo):
-        (repo / "CLAUDE.md").write_text("edited")
+        (repo / "AGENTS.md").write_text("edited")
         with pytest.raises(SystemExit):
             executor._check_clean_tree()
 

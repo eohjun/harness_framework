@@ -5,7 +5,7 @@ Claude Code로 기능 구현을 여러 step으로 나누고, step마다 독립�
 ## 구성
 
 ```
-CLAUDE.md                      # 프로젝트 규칙 (템플릿 — 채워서 사용)
+AGENTS.md                      # 프로젝트 규칙 (템플릿 — 채워서 사용)
 docs/                          # PRD, ARCHITECTURE, ADR, UI_GUIDE (템플릿 — 채워서 사용)
 .claude/
 ├── commands/harness.md        # /harness — 탐색 → 논의 → step 설계 → 파일 생성 → 실행
@@ -19,7 +19,9 @@ scripts/
 phases/                        # /harness가 생성 (task별 index.json, step{N}.md)
 ```
 
-템플릿 기본값(CLAUDE.md의 명령어, `docs/ARCHITECTURE.md`의 디렉토리 구조, Stop 훅의 `npm run lint/build/test`)은 Next.js + npm 프로젝트를 가정한다. 다른 스택이면 함께 바꾼다.
+템플릿 기본값(AGENTS.md의 명령어, `docs/ARCHITECTURE.md`의 디렉토리 구조, Stop 훅의 `npm run lint/build/test`)은 Next.js + npm 프로젝트를 가정한다. 다른 스택이면 함께 바꾼다.
+
+규칙 파일은 `AGENTS.md`라서 Codex처럼 AGENTS.md를 읽는 다른 에이전트 CLI와 함께 쓸 수 있다. Claude Code도 `CLAUDE.md`가 없으면 `AGENTS.md`를 프로젝트 지침으로 불러온다. `CLAUDE.md`를 따로 만들지 않는다. 둘 다 있으면 Claude Code는 `CLAUDE.md`만 읽는다(2026-09 헤드리스 세션으로 확인). `.claude/`의 명령·훅과 `execute.py`(`claude -p` 호출)는 여전히 Claude Code 전용이다.
 
 ## 요구 사항
 
@@ -28,7 +30,7 @@ phases/                        # /harness가 생성 (task별 index.json, step{N}
 
 ## 사용 흐름
 
-1. 이 템플릿으로 새 프로젝트를 만들고 `CLAUDE.md`와 `docs/*.md`의 `{...}` 자리표시자를 채운다. 이 문서들은 매 step 프롬프트에 그대로 주입된다.
+1. 이 템플릿으로 새 프로젝트를 만들고 `AGENTS.md`와 `docs/*.md`의 `{...}` 자리표시자를 채운다. 이 문서들은 매 step 프롬프트에 그대로 주입된다.
 2. Claude Code에서 `/harness`를 실행한다. 문서를 읽고 결정 사항을 논의한 뒤, 승인한 step 설계를 `phases/{task}/` 아래 파일로 만든다.
 3. 실행한다.
 
@@ -45,7 +47,7 @@ phases/                        # /harness가 생성 (task별 index.json, step{N}
 
 - `phases/` 밖에 커밋되지 않은 변경이 있으면 시작하지 않는다. step 커밋이 `git add -A`로 전부 담기 때문이다.
 - `feat-{phase}` 브랜치를 만들거나 checkout한다.
-- step마다 `claude -p --dangerously-skip-permissions` 세션을 띄운다. 프롬프트에는 CLAUDE.md, `docs/*.md`, 완료된 step의 summary, 직전 실패 원인이 들어간다.
+- step마다 `claude -p --dangerously-skip-permissions` 세션을 띄운다. 프롬프트에는 AGENTS.md, `docs/*.md`, 완료된 step의 summary, 직전 실패 원인이 들어간다.
 - 세션이 `completed`를 보고해도 AC 블록을 `bash -e -o pipefail`로 직접 재실행해 통과해야 완료로 인정한다.
 - step이 추가한 줄(`phases/`, `*.md` 제외)에 lint·타입 억제 주석(`# noqa`, `# type: ignore`, `eslint-disable`, `@ts-ignore` 등)이 있으면 커밋하지 않고 재시도한다. 린트 설정 변경으로 우회하는 것은 프롬프트 규칙으로만 금지한다.
 - 실패하면 원인을 피드백해 새 세션으로 최대 3회 재시도한다. 실패 원인에는 AC 출력, 세션의 `error_message`, 비정상 종료·timeout(30분), index.json 파손, pre-commit 훅에 막힌 커밋이 포함된다.

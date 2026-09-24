@@ -65,7 +65,7 @@
 
 필드 규칙:
 
-- `project`: 프로젝트명 (CLAUDE.md 참조).
+- `project`: 프로젝트명 (AGENTS.md 참조).
 - `phase`: task 이름. 디렉토리명과 일치시킨다.
 - `steps[].step`: 0부터 시작하는 순번.
 - `steps[].name`: kebab-case slug.
@@ -117,7 +117,7 @@ npm test        # 테스트 통과
 2. 아키텍처 체크리스트를 확인한다:
    - ARCHITECTURE.md 디렉토리 구조를 따르는가?
    - ADR 기술 스택을 벗어나지 않았는가?
-   - CLAUDE.md CRITICAL 규칙을 위반하지 않았는가?
+   - AGENTS.md CRITICAL 규칙을 위반하지 않았는가?
 3. 결과에 따라 `phases/{task-name}/index.json`의 해당 step을 업데이트한다:
    - 성공 → `"status": "completed"`, `"summary": "산출물 한 줄 요약"`
    - 수정해도 AC를 통과시키지 못함 → `"status": "error"`, `"error_message": "구체적 에러 내용"` (재시도는 execute.py가 새 세션으로 수행)
@@ -140,7 +140,7 @@ execute.py가 자동으로 처리하는 것:
 
 - 작업 트리 확인 — `phases/` 밖에 커밋되지 않은 변경이 있으면 시작하지 않는다 (step 커밋에 섞이지 않도록)
 - `feat-{task-name}` 브랜치 생성/checkout
-- 가드레일 주입 — CLAUDE.md + docs/*.md 내용을 매 step 프롬프트에 포함
+- 가드레일 주입 — AGENTS.md + docs/*.md 내용을 매 step 프롬프트에 포함
 - 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
 - AC 재검증 — step 세션이 `completed`를 보고해도 AC 블록을 직접 재실행해 통과해야 완료로 인정
 - 억제 주석 검사 — step이 추가한 줄(`phases/`, `*.md` 제외)에 `# noqa`, `# type: ignore`, `eslint-disable`, `@ts-ignore` 등이 있으면 커밋하지 않고 재시도

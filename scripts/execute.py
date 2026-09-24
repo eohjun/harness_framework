@@ -218,11 +218,9 @@ class StepExecutor:
 
     def _load_guardrails(self) -> str:
         sections = []
-        claude_md = ROOT / "CLAUDE.md"
-        if claude_md.exists():
-            sections.append(
-                f"## 프로젝트 규칙 (CLAUDE.md)\n\n{claude_md.read_text(encoding='utf-8')}"
-            )
+        rules = ROOT / "AGENTS.md"
+        if rules.exists():
+            sections.append(f"## 프로젝트 규칙 (AGENTS.md)\n\n{rules.read_text(encoding='utf-8')}")
         docs_dir = ROOT / "docs"
         if docs_dir.is_dir():
             for doc in sorted(docs_dir.glob("*.md")):
