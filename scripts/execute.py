@@ -397,6 +397,7 @@ class StepExecutor:
             "-U0",
             "--no-color",
             "--no-ext-diff",
+            "--no-textconv",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--",

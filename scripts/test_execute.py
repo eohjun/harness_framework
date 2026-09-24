@@ -1036,6 +1036,17 @@ class TestFindSuppressions:
         assert err is not None
         assert "a.py:1:" in err
 
+    def test_ignores_textconv_driver(self, executor, repo):
+        # textconv 드라이버가 걸리면 git diff가 변환된 내용을 낸다 — 억제 주석을 지워 숨길 수 있다
+        (repo / ".gitattributes").write_text("*.py diff=hide\n")
+        subprocess.run(
+            ["git", "config", "diff.hide.textconv", "sed s/noqa//"], cwd=repo, check=True
+        )
+        (repo / "a.py").write_text("x = 1  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a.py:1:" in err
+
     def test_detects_suppression_in_non_ascii_path(self, executor, repo):
         # core.quotePath 기본값이면 헤더가 '+++ "b/\355\225\234...py"'로 따옴표 처리된다
         (repo / "한글.py").write_text("x = 1  # noqa\n")
