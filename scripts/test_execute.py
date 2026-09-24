@@ -1043,6 +1043,24 @@ class TestFindSuppressions:
         assert err is not None
         assert "한글.py:1:" in err
 
+    def test_added_line_starting_with_plus_plus_is_not_a_header(self, executor, repo):
+        # "++ y"를 추가하면 diff 줄이 "+++ y"가 된다 — 헤더로 읽으면 뒤 줄을 놓친다
+        (repo / "a.py").write_text("x = 1\n++ y\nz = 2  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a.py:3:" in err
+
+    def test_unparseable_header_fails_closed(self, executor, repo):
+        # 따옴표가 든 파일명은 quotePath=false여도 '+++ "b/q\"uote.py"'로 인용된다
+        (repo / 'q"uote.py').write_text("x = 1\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "diff 헤더" in err
+
+    def test_deleted_file_passes(self, executor, repo):
+        (repo / "old.txt").unlink()
+        assert executor._find_suppressions() is None
+
     def test_clean_change_passes(self, executor, repo):
         (repo / "a.py").write_text("import sys\n\nsys.stdout.write('hi')\n")
         assert executor._find_suppressions() is None

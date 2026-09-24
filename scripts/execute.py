@@ -404,13 +404,23 @@ class StepExecutor:
             ":(exclude)phases",
             ":(exclude)*.md",
         ).stdout
-        hits, path, line_no = [], None, 0
+        hits, path, line_no, in_header = [], None, 0, False
         for line in diff.splitlines():
-            if line.startswith("+++ "):
-                path = line[6:] if line.startswith("+++ b/") else None
+            if line.startswith("diff --git "):
+                path, in_header = None, True
+            elif in_header and line.startswith("+++ "):
+                if line.startswith("+++ b/"):
+                    path = line[6:]
+                elif line != "+++ /dev/null":
+                    # 해석 못 한 헤더를 건너뛰면 그 파일의 억제 주석이 조용히 통과한다
+                    return (
+                        "diff 헤더를 해석할 수 없어 억제 주석을 검사하지 못함 — "
+                        f"파일명에 따옴표·탭·백슬래시가 있으면 이름을 바꿔라: {line}"
+                    )
             elif line.startswith("@@"):
+                in_header = False
                 line_no = int(re.search(r"\+(\d+)", line).group(1))
-            elif line.startswith("+"):
+            elif not in_header and line.startswith("+"):
                 if path and self.SUPPRESSION_RE.search(line):
                     hits.append(f"{path}:{line_no}: {line[1:].strip()}")
                 line_no += 1
