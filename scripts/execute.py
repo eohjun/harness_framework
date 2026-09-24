@@ -242,7 +242,9 @@ class StepExecutor:
         if prev_error:
             retry_section = (
                 f"\n## ⚠ 이전 시도 실패 — 아래 에러를 반드시 참고하여 수정하라\n\n"
-                f"{prev_error}\n\n---\n\n"
+                f"{prev_error}\n\n"
+                f"에러 출력이 수정 커맨드(예: `ruff format <file>`, `... --fix`)를 제시하면 "
+                f"추측으로 고치지 말고 그 커맨드를 먼저 실행한 뒤 AC를 다시 확인하라.\n\n---\n\n"
             )
         return (
             f"당신은 {self._project} 프로젝트의 개발자입니다. 아래 step을 수행하세요.\n\n"

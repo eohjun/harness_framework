@@ -270,6 +270,7 @@ class TestBuildPreamble:
         result = executor._build_preamble("", "", prev_error="타입 에러 발생")
         assert "이전 시도 실패" in result
         assert "타입 에러 발생" in result
+        assert "그 커맨드를 먼저 실행" in result
 
     def test_no_in_session_retry_count(self, executor):
         # 재시도 횟수는 execute.py만 관리한다 (세션 내 재시도와 곱해지지 않도록)
