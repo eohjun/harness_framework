@@ -1,0 +1,43 @@
+# Mirrors the global pre-commit fallback config; only the per-file ignores below differ.
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = [
+  "E",    # pycodestyle errors
+  "F",    # pyflakes
+  "I",    # isort (import sorting)
+  "N",    # pep8-naming
+  "W",    # pycodestyle warnings
+  "UP",   # pyupgrade (modernize syntax)
+  "B",    # flake8-bugbear (common bugs)
+  "S",    # flake8-bandit (security)
+  "SIM",  # flake8-simplify
+  "C4",   # flake8-comprehensions
+  "T20",  # flake8-print (print statement detection)
+  "RUF",  # ruff-specific rules
+  "DTZ",  # flake8-datetimez (naive datetime)
+  "PIE",  # flake8-pie (misc lints)
+  "RET",  # flake8-return (return statement issues)
+  "TCH",  # flake8-type-checking (type-checking imports)
+]
+ignore = [
+  "E501",   # line too long (formatter handles this)
+  "S101",   # assert usage (common in scripts)
+  "S603",   # subprocess call (common in automation scripts)
+  "S607",   # partial executable path (common in scripts)
+  "RET504", # unnecessary assignment before return (readability)
+]
+
+[lint.per-file-ignores]
+"test_*.py" = ["S101", "T20"]
+"**/tests/**" = ["S101", "T20"]
+"conftest.py" = ["S101"]
+# CLI: stdout is the executor's user interface
+"scripts/execute.py" = ["T20"]
+# hook protocol writes the block reason to stderr; the /tmp/ strings are path-prefix matches, not temp files
+".claude/hooks/*.py" = ["T20", "S108"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
