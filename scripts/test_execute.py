@@ -1020,6 +1020,14 @@ class TestFindSuppressions:
         assert "old.txt:3: z = 3  # noqa" in err
         assert "old.txt:1" not in err  # 기존 줄은 이번 step이 추가한 것이 아니다
 
+    def test_ignores_user_diff_prefix_config(self, executor, repo):
+        # diff.mnemonicPrefix가 켜져 있으면 헤더가 "+++ i/a.py"가 된다
+        subprocess.run(["git", "config", "diff.mnemonicPrefix", "true"], cwd=repo, check=True)
+        (repo / "a.py").write_text("x = 1  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a.py:1:" in err
+
     def test_clean_change_passes(self, executor, repo):
         (repo / "a.py").write_text("import sys\n\nsys.stdout.write('hi')\n")
         assert executor._find_suppressions() is None

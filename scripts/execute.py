@@ -394,6 +394,8 @@ class StepExecutor:
             "--cached",
             "-U0",
             "--no-color",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             "--",
             ".",
             ":(exclude)phases",
