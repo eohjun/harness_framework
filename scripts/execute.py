@@ -390,10 +390,13 @@ class StepExecutor:
         phases/와 문서(*.md)는 규칙을 설명할 수 있으므로 제외한다."""
         self._run_git("add", "-A")
         diff = self._run_git(
+            "-c",
+            "core.quotePath=false",
             "diff",
             "--cached",
             "-U0",
             "--no-color",
+            "--no-ext-diff",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--",

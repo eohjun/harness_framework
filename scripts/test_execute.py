@@ -1028,6 +1028,21 @@ class TestFindSuppressions:
         assert err is not None
         assert "a.py:1:" in err
 
+    def test_ignores_user_external_diff_config(self, executor, repo):
+        # diff.external이 설정되면 git diff가 patch 대신 외부 도구 출력을 낸다
+        subprocess.run(["git", "config", "diff.external", "true"], cwd=repo, check=True)
+        (repo / "a.py").write_text("x = 1  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a.py:1:" in err
+
+    def test_detects_suppression_in_non_ascii_path(self, executor, repo):
+        # core.quotePath 기본값이면 헤더가 '+++ "b/\355\225\234...py"'로 따옴표 처리된다
+        (repo / "한글.py").write_text("x = 1  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "한글.py:1:" in err
+
     def test_clean_change_passes(self, executor, repo):
         (repo / "a.py").write_text("import sys\n\nsys.stdout.write('hi')\n")
         assert executor._find_suppressions() is None
