@@ -22,7 +22,7 @@
 2. **자기완결성** — 각 step 파일은 독립된 Claude 세션에서 실행된다. "이전 대화에서 논의한 바와 같이" 같은 외부 참조는 금지한다. 필요한 정보는 전부 파일 안에 적는다.
 3. **사전 준비 강제** — 관련 문서 경로와 이전 step에서 생성/수정된 파일 경로를 명시한다. 세션이 코드를 읽고 맥락을 파악한 뒤 작업하도록 유도한다.
 4. **시그니처 수준 지시** — 함수/클래스의 인터페이스만 제시하고 내부 구현은 에이전트 재량에 맡긴다. 단, 설계 의도에서 벗어나면 안 되는 핵심 규칙(멱등성, 보안, 데이터 무결성 등)은 반드시 명시한다.
-5. **AC는 실행 가능한 커맨드** — "~가 동작해야 한다" 같은 추상적 서술이 아닌 `npm run build && npm test` 같은 실제 실행 가능한 검증 커맨드를 포함한다.
+5. **AC는 실행 가능한 커맨드** — "~가 동작해야 한다" 같은 추상적 서술이 아닌 `npm run build && npm test` 같은 실제 실행 가능한 검증 커맨드를 포함한다. execute.py가 `## Acceptance Criteria` 절의 첫 ` ```bash ` 블록을 프로젝트 루트에서 `bash -e -o pipefail`로 직접 재실행해 완료를 판정한다. 따라서 블록은 비대화형이어야 하고, 블록이 없으면 실행이 시작되지 않는다.
 6. **주의사항은 구체적으로** — "조심해라" 대신 "X를 하지 마라. 이유: Y" 형식으로 적는다.
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
 
@@ -120,7 +120,7 @@ npm test        # 테스트 통과
    - CLAUDE.md CRITICAL 규칙을 위반하지 않았는가?
 3. 결과에 따라 `phases/{task-name}/index.json`의 해당 step을 업데이트한다:
    - 성공 → `"status": "completed"`, `"summary": "산출물 한 줄 요약"`
-   - 수정 3회 시도 후에도 실패 → `"status": "error"`, `"error_message": "구체적 에러 내용"`
+   - 수정해도 AC를 통과시키지 못함 → `"status": "error"`, `"error_message": "구체적 에러 내용"` (재시도는 execute.py가 새 세션으로 수행)
    - 사용자 개입 필요 (API 키, 외부 인증, 수동 설정 등) → `"status": "blocked"`, `"blocked_reason": "구체적 사유"` 후 즉시 중단
 
 ## 금지사항
@@ -138,11 +138,13 @@ python3 scripts/execute.py {task-name} --push  # 실행 후 push
 
 execute.py가 자동으로 처리하는 것:
 
+- 작업 트리 확인 — `phases/` 밖에 커밋되지 않은 변경이 있으면 시작하지 않는다 (step 커밋에 섞이지 않도록)
 - `feat-{task-name}` 브랜치 생성/checkout
 - 가드레일 주입 — CLAUDE.md + docs/*.md 내용을 매 step 프롬프트에 포함
 - 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
-- 자가 교정 — 실패 시 최대 3회 재시도하며, 이전 에러 메시지를 프롬프트에 피드백
-- 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
+- AC 재검증 — step 세션이 `completed`를 보고해도 AC 블록을 직접 재실행해 통과해야 완료로 인정
+- 자가 교정 — 실패 시 새 세션으로 최대 3회 재시도하며, 이전 에러 메시지(AC 출력, 세션 비정상 종료·timeout 포함)를 프롬프트에 피드백
+- 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋. step 세션은 커밋하지 않는다. error/blocked로 끝난 step의 부분 작업은 `wip(...)`로 커밋해 재실행 시 작업 트리를 깨끗하게 유지
 - 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
 
 에러 복구:
@@ -158,7 +160,7 @@ execute.py가 자동으로 처리하는 것:
 2. 종료 코드로 분기한다:
    - `0` → 완료. 사용자에게 결과를 보고한다.
    - `2` → blocked. `blocked_reason`을 사용자에게 전달하고 멈춘다. 사용자 개입(API 키, 인증, 수동 설정 등)이 필요한 상태이므로 메인 세션이 임의로 해소하지 마라.
-   - `1` → `index.json`에서 `"error"` step을 찾는다. 없으면 스크립트 출력의 ERROR 메시지(git, 파일 누락, push 실패 등)나 traceback(step 30분 timeout 등)을 사용자에게 보고한다.
+   - `1` → `index.json`에서 `"error"` step을 찾는다. 없으면 스크립트 출력의 ERROR 메시지(git, 작업 트리 미정리, step 파일·AC 블록 누락, claude CLI 없음, push 실패 등)를 사용자에게 보고한다. AC 블록 누락은 step 지시 문제이므로 아래 3의 절차로 `step{N}.md`를 고쳐도 된다.
 3. error step이 있으면 `error_message`와 `step{N}-output.json`의 필요한 부분만 읽고 원인을 진단한다:
    - step 지시가 원인(모호한 지시, 누락된 파일 경로, 실행 불가능한 AC 등)이면 `step{N}.md`를 수정하고, 위 "에러 복구" 절차대로 `pending`으로 되돌린 뒤 재실행한다. 수정한 step 파일도 자기완결성 원칙(C절 설계 원칙 2)을 지켜야 한다.
    - 환경·외부 요인(의존성, 네트워크, 권한 등)이거나 원인을 특정할 수 없으면 진단 내용을 사용자에게 보고하고 멈춘다.

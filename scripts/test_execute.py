@@ -4,23 +4,23 @@ execute.py 리팩터링 안전망 테스트.
 """
 
 import json
-import os
 import subprocess
 import sys
 import textwrap
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from typing import ClassVar
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 import execute as ex
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def tmp_project(tmp_path):
@@ -93,6 +93,7 @@ def executor(tmp_project, phase_dir):
 # _stamp (= 이전 now_iso)
 # ---------------------------------------------------------------------------
 
+
 class TestStamp:
     def test_returns_kst_timestamp(self, executor):
         result = executor._stamp()
@@ -114,6 +115,7 @@ class TestStamp:
 # ---------------------------------------------------------------------------
 # _read_json / _write_json
 # ---------------------------------------------------------------------------
+
 
 class TestJsonHelpers:
     def test_roundtrip(self, tmp_path):
@@ -145,6 +147,7 @@ class TestJsonHelpers:
 # _load_guardrails
 # ---------------------------------------------------------------------------
 
+
 class TestLoadGuardrails:
     def test_loads_claude_md_and_docs(self, executor, tmp_project):
         with patch.object(ex, "ROOT", tmp_project):
@@ -175,6 +178,7 @@ class TestLoadGuardrails:
 
     def test_no_docs_dir(self, executor, tmp_project):
         import shutil
+
         shutil.rmtree(tmp_project / "docs")
         with patch.object(ex, "ROOT", tmp_project):
             result = executor._load_guardrails()
@@ -196,6 +200,7 @@ class TestLoadGuardrails:
 # ---------------------------------------------------------------------------
 # _build_step_context
 # ---------------------------------------------------------------------------
+
 
 class TestBuildStepContext:
     def test_includes_completed_with_summary(self, phase_dir):
@@ -231,6 +236,7 @@ class TestBuildStepContext:
 # _build_preamble
 # ---------------------------------------------------------------------------
 
+
 class TestBuildPreamble:
     def test_includes_project_name(self, executor):
         result = executor._build_preamble("", "")
@@ -245,9 +251,10 @@ class TestBuildPreamble:
         result = executor._build_preamble("", ctx)
         assert "이전 Step 산출물" in result
 
-    def test_includes_commit_example(self, executor):
+    def test_forbids_session_commit(self, executor):
         result = executor._build_preamble("", "")
-        assert "feat(mvp):" in result
+        assert "git commit/push를 하지 마라" in result
+        assert "모든 변경사항을 커밋하라" not in result
 
     def test_includes_rules(self, executor):
         result = executor._build_preamble("", "")
@@ -263,9 +270,10 @@ class TestBuildPreamble:
         assert "이전 시도 실패" in result
         assert "타입 에러 발생" in result
 
-    def test_includes_max_retries(self, executor):
+    def test_no_in_session_retry_count(self, executor):
+        # 재시도 횟수는 execute.py만 관리한다 (세션 내 재시도와 곱해지지 않도록)
         result = executor._build_preamble("", "")
-        assert str(ex.StepExecutor.MAX_RETRIES) in result
+        assert "회 수정 시도" not in result
 
     def test_includes_index_path(self, executor):
         result = executor._build_preamble("", "")
@@ -275,6 +283,7 @@ class TestBuildPreamble:
 # ---------------------------------------------------------------------------
 # _update_top_index
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateTopIndex:
     def test_completed(self, executor, top_index):
@@ -326,53 +335,71 @@ class TestUpdateTopIndex:
 # _checkout_branch (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestCheckoutBranch:
     def _mock_git(self, executor, responses):
         call_idx = {"i": 0}
+
         def fake_git(*args):
             idx = call_idx["i"]
             call_idx["i"] += 1
             if idx < len(responses):
                 return responses[idx]
             return MagicMock(returncode=0, stdout="", stderr="")
+
         executor._run_git = fake_git
 
     def test_already_on_branch(self, executor):
-        self._mock_git(executor, [
-            MagicMock(returncode=0, stdout="feat-mvp\n", stderr=""),
-        ])
+        self._mock_git(
+            executor,
+            [
+                MagicMock(returncode=0, stdout="feat-mvp\n", stderr=""),
+            ],
+        )
         executor._checkout_branch()  # should return without checkout
 
     def test_branch_exists_checkout(self, executor):
-        self._mock_git(executor, [
-            MagicMock(returncode=0, stdout="main\n", stderr=""),
-            MagicMock(returncode=0, stdout="", stderr=""),
-            MagicMock(returncode=0, stdout="", stderr=""),
-        ])
+        self._mock_git(
+            executor,
+            [
+                MagicMock(returncode=0, stdout="main\n", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ],
+        )
         executor._checkout_branch()
 
     def test_branch_not_exists_create(self, executor):
-        self._mock_git(executor, [
-            MagicMock(returncode=0, stdout="main\n", stderr=""),
-            MagicMock(returncode=1, stdout="", stderr="not found"),
-            MagicMock(returncode=0, stdout="", stderr=""),
-        ])
+        self._mock_git(
+            executor,
+            [
+                MagicMock(returncode=0, stdout="main\n", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="not found"),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ],
+        )
         executor._checkout_branch()
 
     def test_checkout_fails_exits(self, executor):
-        self._mock_git(executor, [
-            MagicMock(returncode=0, stdout="main\n", stderr=""),
-            MagicMock(returncode=1, stdout="", stderr=""),
-            MagicMock(returncode=1, stdout="", stderr="dirty tree"),
-        ])
+        self._mock_git(
+            executor,
+            [
+                MagicMock(returncode=0, stdout="main\n", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="dirty tree"),
+            ],
+        )
         with pytest.raises(SystemExit) as exc_info:
             executor._checkout_branch()
         assert exc_info.value.code == 1
 
     def test_no_git_exits(self, executor):
-        self._mock_git(executor, [
-            MagicMock(returncode=1, stdout="", stderr="not a git repo"),
-        ])
+        self._mock_git(
+            executor,
+            [
+                MagicMock(returncode=1, stdout="", stderr="not a git repo"),
+            ],
+        )
         with pytest.raises(SystemExit) as exc_info:
             executor._checkout_branch()
         assert exc_info.value.code == 1
@@ -382,14 +409,17 @@ class TestCheckoutBranch:
 # _commit_step (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestCommitStep:
     def test_two_phase_commit(self, executor):
         calls = []
+
         def fake_git(*args):
             calls.append(args)
             if args[:2] == ("diff", "--cached"):
                 return MagicMock(returncode=1)
             return MagicMock(returncode=0, stdout="", stderr="")
+
         executor._run_git = fake_git
 
         executor._commit_step(2, "ui")
@@ -402,6 +432,7 @@ class TestCommitStep:
     def test_no_code_changes_skips_feat_commit(self, executor):
         call_count = {"diff": 0}
         calls = []
+
         def fake_git(*args):
             calls.append(args)
             if args[:2] == ("diff", "--cached"):
@@ -410,6 +441,7 @@ class TestCommitStep:
                     return MagicMock(returncode=0)
                 return MagicMock(returncode=1)
             return MagicMock(returncode=0, stdout="", stderr="")
+
         executor._run_git = fake_git
 
         executor._commit_step(2, "ui")
@@ -423,6 +455,7 @@ class TestCommitStep:
 # _invoke_claude (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestInvokeClaude:
     def test_invokes_claude_with_correct_args(self, executor):
         mock_result = MagicMock(returncode=0, stdout='{"result": "ok"}', stderr="")
@@ -430,7 +463,7 @@ class TestInvokeClaude:
         preamble = "PREAMBLE\n"
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            output = executor._invoke_claude(step, preamble)
+            executor._invoke_claude(step, preamble)
 
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "claude"
@@ -474,15 +507,18 @@ class TestInvokeClaude:
 # progress_indicator (= 이전 Spinner)
 # ---------------------------------------------------------------------------
 
+
 class TestProgressIndicator:
     def test_context_manager(self):
         import time
+
         with ex.progress_indicator("test") as pi:
             time.sleep(0.15)
         assert pi.elapsed >= 0.1
 
     def test_elapsed_increases(self):
         import time
+
         with ex.progress_indicator("test") as pi:
             time.sleep(0.2)
         assert pi.elapsed > 0
@@ -492,6 +528,7 @@ class TestProgressIndicator:
 # main() CLI 파싱 (mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestMainCli:
     def test_no_args_exits(self):
         with patch("sys.argv", ["execute.py"]):
@@ -499,25 +536,30 @@ class TestMainCli:
                 ex.main()
             assert exc_info.value.code == 2  # argparse exits with 2
 
-    def test_invalid_phase_dir_exits(self):
-        with patch("sys.argv", ["execute.py", "nonexistent"]):
-            with patch.object(ex, "ROOT", Path("/tmp/fake_nonexistent")):
-                with pytest.raises(SystemExit) as exc_info:
-                    ex.main()
-                assert exc_info.value.code == 1
+    def test_invalid_phase_dir_exits(self, tmp_path):
+        with (
+            patch("sys.argv", ["execute.py", "nonexistent"]),
+            patch.object(ex, "ROOT", tmp_path / "fake_nonexistent"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            ex.main()
+        assert exc_info.value.code == 1
 
     def test_missing_index_exits(self, tmp_project):
         (tmp_project / "phases" / "empty").mkdir()
-        with patch("sys.argv", ["execute.py", "empty"]):
-            with patch.object(ex, "ROOT", tmp_project):
-                with pytest.raises(SystemExit) as exc_info:
-                    ex.main()
-                assert exc_info.value.code == 1
+        with (
+            patch("sys.argv", ["execute.py", "empty"]),
+            patch.object(ex, "ROOT", tmp_project),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            ex.main()
+        assert exc_info.value.code == 1
 
 
 # ---------------------------------------------------------------------------
 # _check_blockers (= 이전 main() error/blocked 체크)
 # ---------------------------------------------------------------------------
+
 
 class TestCheckBlockers:
     def _make_executor_with_steps(self, tmp_project, steps):
@@ -557,3 +599,275 @@ class TestCheckBlockers:
         with pytest.raises(SystemExit) as exc_info:
             inst._check_blockers()
         assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# _extract_ac / _run_ac
+# ---------------------------------------------------------------------------
+
+STEP_MD_WITH_AC = textwrap.dedent("""\
+    # Step 2: UI
+
+    ## 작업
+
+    ```bash
+    echo not-ac
+    ```
+
+    ## Acceptance Criteria
+
+    ```bash
+    {ac}
+    ```
+
+    ## 금지사항
+
+    - 없음
+    """)
+
+
+class TestExtractAc:
+    def test_extracts_bash_block(self):
+        md = STEP_MD_WITH_AC.format(ac="npm run build\nnpm test")
+        assert ex.StepExecutor._extract_ac(md) == "npm run build\nnpm test\n"
+
+    def test_ignores_bash_blocks_outside_ac_section(self):
+        md = STEP_MD_WITH_AC.format(ac="true")
+        assert "not-ac" not in ex.StepExecutor._extract_ac(md)
+
+    def test_none_without_section(self):
+        assert ex.StepExecutor._extract_ac("# Step\n\n## 작업\n\n```bash\ntrue\n```\n") is None
+
+    def test_none_without_bash_block(self):
+        assert (
+            ex.StepExecutor._extract_ac(
+                "## Acceptance Criteria\n\n빌드가 돼야 한다\n\n## 금지사항\n"
+            )
+            is None
+        )
+
+
+class TestRunAc:
+    def test_pass_returns_none(self, executor):
+        assert executor._run_ac("true\n") is None
+
+    def test_runs_in_project_root(self, executor, tmp_project):
+        assert executor._run_ac("test -f CLAUDE.md\n") is None
+
+    def test_earlier_failure_is_not_masked(self, executor):
+        err = executor._run_ac("false\ntrue\n")
+        assert err is not None and "AC 재검증 실패" in err
+
+    def test_pipe_failure_is_not_masked(self, executor):
+        assert executor._run_ac("false | cat\n") is not None
+
+    def test_timeout_returns_message(self, executor):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("bash", 1)):
+            assert "끝나지 않음" in executor._run_ac("sleep 9\n")
+
+
+# ---------------------------------------------------------------------------
+# _check_clean_tree (real git)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCleanTree:
+    @pytest.fixture
+    def repo(self, executor, tmp_project):
+        def git(*args):
+            subprocess.run(["git", *args], cwd=tmp_project, check=True, capture_output=True)
+
+        git("init", "-q")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
+        git("add", "CLAUDE.md", "docs")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "docs")
+        return tmp_project
+
+    def test_untracked_phases_allowed(self, executor, repo):
+        executor._check_clean_tree()  # phases/ 는 아직 untracked 여도 통과
+
+    def test_dirty_outside_phases_exits(self, executor, repo):
+        (repo / "src.txt").write_text("stray change")
+        with pytest.raises(SystemExit) as exc_info:
+            executor._check_clean_tree()
+        assert exc_info.value.code == 1
+
+    def test_modified_tracked_file_exits(self, executor, repo):
+        (repo / "CLAUDE.md").write_text("edited")
+        with pytest.raises(SystemExit):
+            executor._check_clean_tree()
+
+
+# ---------------------------------------------------------------------------
+# _commit_step outcome
+# ---------------------------------------------------------------------------
+
+
+class TestCommitStepOutcome:
+    @pytest.mark.parametrize("outcome", ["error", "blocked"])
+    def test_non_completed_uses_wip(self, executor, outcome):
+        calls = []
+
+        def fake_git(*args):
+            calls.append(args)
+            if args[:2] == ("diff", "--cached"):
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        executor._run_git = fake_git
+
+        executor._commit_step(2, "ui", outcome=outcome)
+
+        first_msg = next(c for c in calls if c[0] == "commit")[2]
+        assert first_msg.startswith("wip(mvp):")
+        assert f"({outcome})" in first_msg
+
+
+# ---------------------------------------------------------------------------
+# _invoke_claude failure modes
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeClaudeFailures:
+    def test_timeout_is_recorded_not_raised(self, executor):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 1800)):
+            output = executor._invoke_claude({"step": 2, "name": "ui"}, "p")
+        assert output["timedOut"] is True
+        assert output["exitCode"] is None
+        assert (
+            json.loads((executor._phase_dir / "step2-output.json").read_text())["timedOut"] is True
+        )
+
+    def test_missing_cli_exits_1(self, executor):
+        with (
+            patch("subprocess.run", side_effect=FileNotFoundError("claude")),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            executor._invoke_claude({"step": 2, "name": "ui"}, "p")
+        assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# _execute_single_step (state machine, claude/git mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteSingleStep:
+    STEP: ClassVar[dict] = {"step": 2, "name": "ui", "status": "pending"}
+    OK_OUTPUT: ClassVar[dict] = {"exitCode": 0, "timedOut": False, "stderr": ""}
+
+    @pytest.fixture
+    def run(self, executor, phase_dir):
+        """session(index_dict) 가 step 세션의 index 수정을 흉내낸다. 호출 기록을 반환."""
+        rec = {"prompts": [], "commits": []}
+        executor._commit_step = lambda num, name, outcome="completed": rec["commits"].append(
+            outcome
+        )
+
+        def setup(session, ac="true", raw_session=None):
+            (phase_dir / "step2.md").write_text(STEP_MD_WITH_AC.format(ac=ac))
+
+            def fake_invoke(step, preamble):
+                rec["prompts"].append(preamble)
+                if raw_session:
+                    raw_session(executor._index_file)
+                else:
+                    idx = json.loads(executor._index_file.read_text())
+                    session(next(s for s in idx["steps"] if s["step"] == 2))
+                    executor._index_file.write_text(json.dumps(idx, ensure_ascii=False))
+                return dict(self.OK_OUTPUT)
+
+            executor._invoke_claude = fake_invoke
+            return rec
+
+        return setup
+
+    def _step(self, executor):
+        return next(
+            s for s in json.loads(executor._index_file.read_text())["steps"] if s["step"] == 2
+        )
+
+    def test_completed_and_ac_passes(self, executor, run):
+        rec = run(lambda s: s.update(status="completed", summary="UI 완료"))
+        assert executor._execute_single_step(self.STEP, "") is True
+        assert rec["commits"] == ["completed"]
+        assert "completed_at" in self._step(executor)
+        assert len(rec["prompts"]) == 1
+
+    def test_false_completed_claim_is_retried_then_errors(self, executor, run):
+        rec = run(lambda s: s.update(status="completed", summary="거짓 완료"), ac="false")
+        with pytest.raises(SystemExit) as exc_info:
+            executor._execute_single_step(self.STEP, "")
+        assert exc_info.value.code == 1
+        step = self._step(executor)
+        assert step["status"] == "error"
+        assert "AC 재검증 실패" in step["error_message"]
+        assert len(rec["prompts"]) == ex.StepExecutor.MAX_RETRIES
+        assert "AC 재검증 실패" in rec["prompts"][1]  # 다음 시도에 피드백됨
+        assert rec["commits"] == ["error"]
+
+    def test_recovers_on_retry(self, executor, run):
+        attempts = {"n": 0}
+
+        def session(s):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                s.update(status="error", error_message="타입 에러")
+            else:
+                s.update(status="completed", summary="고침")
+
+        rec = run(session)
+        assert executor._execute_single_step(self.STEP, "") is True
+        assert "타입 에러" in rec["prompts"][1]
+        assert rec["commits"] == ["completed"]
+
+    def test_blocked_exits_2_and_commits_wip(self, executor, run):
+        rec = run(lambda s: s.update(status="blocked", blocked_reason="API 키 필요"))
+        with pytest.raises(SystemExit) as exc_info:
+            executor._execute_single_step(self.STEP, "")
+        assert exc_info.value.code == 2
+        assert "blocked_at" in self._step(executor)
+        assert rec["commits"] == ["blocked"]
+
+    def test_corrupted_index_is_restored_and_retried(self, executor, run):
+        calls = {"n": 0}
+
+        def raw(index_file):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                index_file.write_text("{ broken")
+            else:
+                idx = json.loads(index_file.read_text())
+                idx["steps"][2].update(status="completed", summary="ok")
+                index_file.write_text(json.dumps(idx))
+
+        rec = run(None, raw_session=raw)
+        assert executor._execute_single_step(self.STEP, "") is True
+        assert "index.json을 파손함" in rec["prompts"][1]
+
+    def test_session_crash_message_is_fed_back(self, executor, run):
+        rec = run(lambda s: None)
+        crashed = {"exitCode": 1, "timedOut": False, "stderr": "boom"}
+        orig = executor._invoke_claude
+        executor._invoke_claude = lambda step, p: (orig(step, p), crashed)[1]
+        with pytest.raises(SystemExit):
+            executor._execute_single_step(self.STEP, "")
+        assert "비정상 종료 (exit 1): boom" in rec["prompts"][1]
+
+    def test_missing_ac_block_exits_before_invoking(self, executor, run, phase_dir):
+        rec = run(lambda s: None)
+        (phase_dir / "step2.md").write_text("# Step 2\n\n## 작업\n\n뭔가 하라\n")
+        with pytest.raises(SystemExit) as exc_info:
+            executor._execute_single_step(self.STEP, "")
+        assert exc_info.value.code == 1
+        assert rec["prompts"] == []

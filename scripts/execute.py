@@ -9,13 +9,13 @@ Usage:
 import argparse
 import contextlib
 import json
-import os
+import re
 import subprocess
 import sys
 import threading
 import time
 import types
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -54,7 +54,9 @@ class StepExecutor:
     """Phase 디렉토리 안의 step들을 순차 실행하는 하네스."""
 
     MAX_RETRIES = 3
+    TIMEOUT = 1800
     FEAT_MSG = "feat({phase}): step {num} — {name}"
+    WIP_MSG = "wip({phase}): step {num} — {name} ({outcome})"
     CHORE_MSG = "chore({phase}): step {num} output"
     TZ = timezone(timedelta(hours=9))
 
@@ -83,6 +85,7 @@ class StepExecutor:
     def run(self):
         self._print_header()
         self._check_blockers()
+        self._check_clean_tree()
         self._checkout_branch()
         guardrails = self._load_guardrails()
         self._ensure_created_at()
@@ -107,7 +110,7 @@ class StepExecutor:
     # --- git ---
 
     def _run_git(self, *args) -> subprocess.CompletedProcess:
-        cmd = ["git"] + list(args)
+        cmd = ["git", *args]
         return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True)
 
     def _checkout_branch(self):
@@ -115,7 +118,7 @@ class StepExecutor:
 
         r = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
         if r.returncode != 0:
-            print(f"  ERROR: git을 사용할 수 없거나 git repo가 아닙니다.")
+            print("  ERROR: git을 사용할 수 없거나 git repo가 아닙니다.")
             print(f"  {r.stderr.strip()}")
             sys.exit(1)
 
@@ -123,17 +126,35 @@ class StepExecutor:
             return
 
         r = self._run_git("rev-parse", "--verify", branch)
-        r = self._run_git("checkout", branch) if r.returncode == 0 else self._run_git("checkout", "-b", branch)
+        r = (
+            self._run_git("checkout", branch)
+            if r.returncode == 0
+            else self._run_git("checkout", "-b", branch)
+        )
 
         if r.returncode != 0:
             print(f"  ERROR: 브랜치 '{branch}' checkout 실패.")
             print(f"  {r.stderr.strip()}")
-            print(f"  Hint: 변경사항을 stash하거나 commit한 후 다시 시도하세요.")
+            print("  Hint: 변경사항을 stash하거나 commit한 후 다시 시도하세요.")
             sys.exit(1)
 
         print(f"  Branch: {branch}")
 
-    def _commit_step(self, step_num: int, step_name: str):
+    def _check_clean_tree(self):
+        """phases/ 밖에 커밋되지 않은 변경이 있으면 중단한다. step 커밋이 git add -A로 전부 담기 때문이다."""
+        r = self._run_git("status", "--porcelain", "--", ".", ":(exclude)phases")
+        if r.returncode != 0:
+            print("  ERROR: git을 사용할 수 없거나 git repo가 아닙니다.")
+            print(f"  {r.stderr.strip()}")
+            sys.exit(1)
+        if r.stdout.strip():
+            print(
+                "  ERROR: phases/ 밖에 커밋되지 않은 변경이 있습니다. step 커밋에 섞이지 않도록 commit 또는 stash 후 다시 실행하세요."
+            )
+            print(r.stdout.rstrip())
+            sys.exit(1)
+
+    def _commit_step(self, step_num: int, step_name: str, outcome: str = "completed"):
         output_rel = f"phases/{self._phase_dir_name}/step{step_num}-output.json"
         index_rel = f"phases/{self._phase_dir_name}/index.json"
 
@@ -142,7 +163,12 @@ class StepExecutor:
         self._run_git("reset", "HEAD", "--", index_rel)
 
         if self._run_git("diff", "--cached", "--quiet").returncode != 0:
-            msg = self.FEAT_MSG.format(phase=self._phase_name, num=step_num, name=step_name)
+            if outcome == "completed":
+                msg = self.FEAT_MSG.format(phase=self._phase_name, num=step_num, name=step_name)
+            else:
+                msg = self.WIP_MSG.format(
+                    phase=self._phase_name, num=step_num, name=step_name, outcome=outcome
+                )
             r = self._run_git("commit", "-m", msg)
             if r.returncode == 0:
                 print(f"  Commit: {msg}")
@@ -166,7 +192,11 @@ class StepExecutor:
         for phase in top.get("phases", []):
             if phase.get("dir") == self._phase_dir_name:
                 phase["status"] = status
-                ts_key = {"completed": "completed_at", "error": "failed_at", "blocked": "blocked_at"}.get(status)
+                ts_key = {
+                    "completed": "completed_at",
+                    "error": "failed_at",
+                    "blocked": "blocked_at",
+                }.get(status)
                 if ts_key:
                     phase[ts_key] = ts
                 break
@@ -196,11 +226,9 @@ class StepExecutor:
             return ""
         return "## 이전 Step 산출물\n\n" + "\n".join(lines) + "\n\n"
 
-    def _build_preamble(self, guardrails: str, step_context: str,
-                        prev_error: Optional[str] = None) -> str:
-        commit_example = self.FEAT_MSG.format(
-            phase=self._phase_name, num="N", name="<step-name>"
-        )
+    def _build_preamble(
+        self, guardrails: str, step_context: str, prev_error: Optional[str] = None
+    ) -> str:
         retry_section = ""
         if prev_error:
             retry_section = (
@@ -217,11 +245,11 @@ class StepExecutor:
             f"3. 기존 테스트를 깨뜨리지 마라.\n"
             f"4. AC(Acceptance Criteria) 검증을 직접 실행하라.\n"
             f"5. /phases/{self._phase_dir_name}/index.json의 해당 step status를 업데이트하라:\n"
-            f"   - AC 통과 → \"completed\" + \"summary\" 필드에 이 step의 산출물을 한 줄로 요약\n"
-            f"   - {self.MAX_RETRIES}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
-            f"   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → \"blocked\" + \"blocked_reason\" 기록 후 즉시 중단\n"
-            f"6. 모든 변경사항을 커밋하라:\n"
-            f"   {commit_example}\n\n---\n\n"
+            f'   - AC 통과 → "completed" + "summary" 필드에 이 step의 산출물을 한 줄로 요약\n'
+            f'   - 수정해도 AC를 통과시키지 못함 → "error" + "error_message"에 실패 원인을 구체적으로 기록 '
+            f"(execute.py가 이 메시지를 전달해 새 세션으로 재시도한다)\n"
+            f'   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → "blocked" + "blocked_reason" 기록 후 즉시 중단\n'
+            f"6. git commit/push를 하지 마라. 커밋은 execute.py가 step 종료 후 코드와 메타데이터를 나눠 수행한다.\n\n---\n\n"
         )
 
     # --- Claude 호출 ---
@@ -235,20 +263,43 @@ class StepExecutor:
             sys.exit(1)
 
         prompt = preamble + step_file.read_text()
-        result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json", prompt],
-            cwd=self._root, capture_output=True, text=True, timeout=1800,
-        )
+        timed_out = False
+        try:
+            result = subprocess.run(
+                [
+                    "claude",
+                    "-p",
+                    "--dangerously-skip-permissions",
+                    "--output-format",
+                    "json",
+                    prompt,
+                ],
+                cwd=self._root,
+                capture_output=True,
+                text=True,
+                timeout=self.TIMEOUT,
+            )
+            exit_code, stdout, stderr = result.returncode, result.stdout, result.stderr
+        except FileNotFoundError:
+            print("  ERROR: claude CLI를 찾을 수 없습니다. PATH를 확인하세요.")
+            sys.exit(1)
+        except subprocess.TimeoutExpired as e:
+            timed_out = True
+            exit_code, stdout, stderr = None, e.stdout or "", e.stderr or ""
+            print(f"\n  WARN: Claude가 {self.TIMEOUT}s 안에 끝나지 않아 종료됨")
 
-        if result.returncode != 0:
-            print(f"\n  WARN: Claude가 비정상 종료됨 (code {result.returncode})")
-            if result.stderr:
-                print(f"  stderr: {result.stderr[:500]}")
+        if exit_code not in (0, None):
+            print(f"\n  WARN: Claude가 비정상 종료됨 (code {exit_code})")
+            if stderr:
+                print(f"  stderr: {stderr[:500]}")
 
         output = {
-            "step": step_num, "name": step_name,
-            "exitCode": result.returncode,
-            "stdout": result.stdout, "stderr": result.stderr,
+            "step": step_num,
+            "name": step_name,
+            "exitCode": exit_code,
+            "timedOut": timed_out,
+            "stdout": stdout,
+            "stderr": stderr,
         }
         out_path = self._phase_dir / f"step{step_num}-output.json"
         with open(out_path, "w") as f:
@@ -259,12 +310,12 @@ class StepExecutor:
     # --- 헤더 & 검증 ---
 
     def _print_header(self):
-        print(f"\n{'='*60}")
-        print(f"  Harness Step Executor")
+        print(f"\n{'=' * 60}")
+        print("  Harness Step Executor")
         print(f"  Phase: {self._phase_name} | Steps: {self._total}")
         if self._auto_push:
-            print(f"  Auto-push: enabled")
-        print(f"{'='*60}")
+            print("  Auto-push: enabled")
+        print(f"{'=' * 60}")
 
     def _check_blockers(self):
         index = self._read_json(self._index_file)
@@ -272,12 +323,12 @@ class StepExecutor:
             if s["status"] == "error":
                 print(f"\n  ✗ Step {s['step']} ({s['name']}) failed.")
                 print(f"  Error: {s.get('error_message', 'unknown')}")
-                print(f"  Fix and reset status to 'pending' to retry.")
+                print("  Fix and reset status to 'pending' to retry.")
                 sys.exit(1)
             if s["status"] == "blocked":
                 print(f"\n  ⏸ Step {s['step']} ({s['name']}) blocked.")
                 print(f"  Reason: {s.get('blocked_reason', 'unknown')}")
-                print(f"  Resolve and reset status to 'pending' to retry.")
+                print("  Resolve and reset status to 'pending' to retry.")
                 sys.exit(2)
             if s["status"] != "pending":
                 break
@@ -288,12 +339,69 @@ class StepExecutor:
             index["created_at"] = self._stamp()
             self._write_json(self._index_file, index)
 
+    # --- Acceptance Criteria ---
+
+    @staticmethod
+    def _extract_ac(step_md: str) -> Optional[str]:
+        """'## Acceptance Criteria' 절의 첫 ```bash 블록을 반환한다. 없으면 None."""
+        section = re.search(
+            r"^## Acceptance Criteria[ \t]*\n(.*?)(?=^## |\Z)", step_md, re.M | re.S
+        )
+        if not section:
+            return None
+        block = re.search(r"^```(?:bash|sh)[ \t]*\n(.*?)^```", section.group(1), re.M | re.S)
+        return block.group(1) if block else None
+
+    def _run_ac(self, script: str) -> Optional[str]:
+        """AC 커맨드를 직접 실행한다. 통과면 None, 실패면 에러 메시지.
+        step 세션의 completed 보고를 그대로 믿지 않기 위한 재검증이다."""
+        try:
+            r = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", script],
+                cwd=self._root,
+                capture_output=True,
+                text=True,
+                timeout=self.TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return f"AC 재검증이 {self.TIMEOUT}s 안에 끝나지 않음"
+        if r.returncode == 0:
+            return None
+        return f"AC 재검증 실패 (exit {r.returncode}):\n{(r.stdout + r.stderr)[-2000:]}"
+
     # --- 실행 루프 ---
 
+    def _reload_index(self, snapshot: str) -> tuple:
+        """step 세션 종료 후 index를 다시 읽는다. 세션이 JSON을 파손했으면 실행 전 상태로 복구하고 에러 메시지를 함께 반환한다."""
+        try:
+            return self._read_json(self._index_file), None
+        except json.JSONDecodeError as e:
+            self._index_file.write_text(snapshot, encoding="utf-8")
+            return self._read_json(self._index_file), (
+                f"step 세션이 index.json을 파손함 ({e}). 실행 전 상태로 복구했다. JSON 형식을 지켜 수정하라."
+            )
+
+    def _describe_no_status(self, output: dict) -> str:
+        if output.get("timedOut"):
+            return f"step 세션이 {self.TIMEOUT}s 안에 끝나지 않음"
+        if output.get("exitCode") != 0:
+            return f"step 세션 비정상 종료 (exit {output.get('exitCode')}): {output.get('stderr', '')[-500:]}"
+        return "Step did not update status"
+
     def _execute_single_step(self, step: dict, guardrails: str) -> bool:
-        """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 False."""
+        """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 프로세스를 종료한다."""
         step_num, step_name = step["step"], step["name"]
-        done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
+        step_file = self._phase_dir / f"step{step_num}.md"
+        if not step_file.exists():
+            print(f"  ERROR: {step_file} not found")
+            sys.exit(1)
+        ac_script = self._extract_ac(step_file.read_text())
+        if ac_script is None:
+            print(f"  ERROR: {step_file}의 '## Acceptance Criteria'에 ```bash 블록이 없습니다.")
+            sys.exit(1)
+        done = sum(
+            1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed"
+        )
         prev_error = None
 
         for attempt in range(1, self.MAX_RETRIES + 1):
@@ -305,58 +413,55 @@ class StepExecutor:
             if attempt > 1:
                 tag += f" [retry {attempt}/{self.MAX_RETRIES}]"
 
+            snapshot = self._index_file.read_text(encoding="utf-8")
             with progress_indicator(tag) as pi:
-                self._invoke_claude(step, preamble)
+                output = self._invoke_claude(step, preamble)
                 elapsed = int(pi.elapsed)
 
-            index = self._read_json(self._index_file)
-            status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
+            index, err_msg = self._reload_index(snapshot)
+            s = next(x for x in index["steps"] if x["step"] == step_num)
+            status = s.get("status", "pending")
             ts = self._stamp()
 
             if status == "completed":
-                for s in index["steps"]:
-                    if s["step"] == step_num:
-                        s["completed_at"] = ts
-                self._write_json(self._index_file, index)
-                self._commit_step(step_num, step_name)
-                print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]")
-                return True
+                err_msg = self._run_ac(ac_script)
+                if err_msg is None:
+                    s["completed_at"] = ts
+                    self._write_json(self._index_file, index)
+                    self._commit_step(step_num, step_name)
+                    print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]")
+                    return True
 
             if status == "blocked":
-                for s in index["steps"]:
-                    if s["step"] == step_num:
-                        s["blocked_at"] = ts
+                s["blocked_at"] = ts
                 self._write_json(self._index_file, index)
-                reason = next((s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num), "")
                 print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
-                print(f"    Reason: {reason}")
+                print(f"    Reason: {s.get('blocked_reason', '')}")
                 self._update_top_index("blocked")
+                self._commit_step(step_num, step_name, outcome="blocked")
                 sys.exit(2)
 
-            err_msg = next(
-                (s.get("error_message", "Step did not update status") for s in index["steps"] if s["step"] == step_num),
-                "Step did not update status",
-            )
+            if err_msg is None:
+                err_msg = s.get("error_message") or self._describe_no_status(output)
 
             if attempt < self.MAX_RETRIES:
-                for s in index["steps"]:
-                    if s["step"] == step_num:
-                        s["status"] = "pending"
-                        s.pop("error_message", None)
+                s["status"] = "pending"
+                s.pop("error_message", None)
+                s.pop("summary", None)
                 self._write_json(self._index_file, index)
                 prev_error = err_msg
                 print(f"  ↻ Step {step_num}: retry {attempt}/{self.MAX_RETRIES} — {err_msg}")
             else:
-                for s in index["steps"]:
-                    if s["step"] == step_num:
-                        s["status"] = "error"
-                        s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 실패] {err_msg}"
-                        s["failed_at"] = ts
+                s["status"] = "error"
+                s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 실패] {err_msg}"
+                s["failed_at"] = ts
                 self._write_json(self._index_file, index)
-                self._commit_step(step_num, step_name)
-                print(f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]")
+                print(
+                    f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]"
+                )
                 print(f"    Error: {err_msg}")
                 self._update_top_index("error")
+                self._commit_step(step_num, step_name, outcome="error")
                 sys.exit(1)
 
         return False  # unreachable
@@ -399,9 +504,9 @@ class StepExecutor:
                 sys.exit(1)
             print(f"  ✓ Pushed to origin/{branch}")
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  Phase '{self._phase_name}' completed!")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
 
 def main():
