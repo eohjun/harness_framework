@@ -999,6 +999,10 @@ class TestFindSuppressions:
             ("src/a.ts", "// @ts-expect-error\n"),
             ("src/a.tsx", "/* eslint-disable */\n"),
             ("src/a.js", "// biome-ignore lint: reason\n"),
+            ("src/a.js", "// prettier-ignore\nconst m = [1,0,\n0,1];\n"),
+            ("src/a.css", "/* prettier-ignore */\n"),
+            ("a.py", "# fmt: off\nm = [1,0,\n0,1]\n# fmt: on\n"),
+            ("a.py", "m = [1,0,  0,1]  # fmt: skip\n"),
         ],
     )
     def test_detects_added_suppression(self, executor, repo, name, content):

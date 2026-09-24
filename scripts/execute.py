@@ -62,7 +62,8 @@ class StepExecutor:
     CHORE_MSG = "chore({phase}): step {num} output"
     SUPPRESSION_RE = re.compile(
         r"#\s*noqa\b|#\s*type:\s*ignore|#\s*pyright:\s*ignore|#\s*pylint:\s*disable"
-        r"|eslint-disable|@ts-(?:ignore|nocheck|expect-error)|biome-ignore"
+        r"|#\s*fmt:\s*(?:off|skip)\b"
+        r"|eslint-disable|@ts-(?:ignore|nocheck|expect-error)|biome-ignore|prettier-ignore"
     )
     TZ = timezone(timedelta(hours=9))
 
