@@ -1047,6 +1047,25 @@ class TestFindSuppressions:
         assert err is not None
         assert "a.py:1:" in err
 
+    @pytest.mark.parametrize("attr", ["-diff", "binary"])
+    def test_ignores_binary_attribute(self, executor, repo, attr):
+        # 바이너리로 표시되면 git diff가 "Binary files ... differ"만 내어 추가된 줄이 사라진다
+        (repo / ".gitattributes").write_text(f"*.py {attr}\n")
+        (repo / "a.py").write_text("x = 1  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a.py:1:" in err
+
+    def test_non_utf8_file_does_not_crash(self, executor, repo):
+        (repo / "k.py").write_bytes("# 한글\nx = 1  # noqa\n".encode("cp949"))
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "k.py:2:" in err
+
+    def test_binary_file_passes(self, executor, repo):
+        (repo / "i.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe")
+        assert executor._find_suppressions() is None
+
     def test_detects_suppression_in_non_ascii_path(self, executor, repo):
         # core.quotePath 기본값이면 헤더가 '+++ "b/\355\225\234...py"'로 따옴표 처리된다
         (repo / "한글.py").write_text("x = 1  # noqa\n")
