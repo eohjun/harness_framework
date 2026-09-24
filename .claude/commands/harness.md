@@ -144,7 +144,7 @@ execute.py가 자동으로 처리하는 것:
 - 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
 - AC 재검증 — step 세션이 `completed`를 보고해도 AC 블록을 직접 재실행해 통과해야 완료로 인정
 - 자가 교정 — 실패 시 새 세션으로 최대 3회 재시도하며, 이전 에러 메시지(AC 출력, 세션 비정상 종료·timeout 포함)를 프롬프트에 피드백
-- 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋. step 세션은 커밋하지 않는다. error/blocked로 끝난 step의 부분 작업은 `wip(...)`로 커밋해 재실행 시 작업 트리를 깨끗하게 유지
+- 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋. step 세션은 커밋하지 않는다. 코드 커밋이 pre-commit 훅 등에 막히면 그 출력을 피드백해 재시도한다. error/blocked로 끝난 step의 부분 작업은 `wip(...)`로 커밋해 재실행 시 작업 트리를 깨끗하게 유지
 - 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
 
 에러 복구:

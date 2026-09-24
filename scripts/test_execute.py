@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
@@ -411,6 +412,32 @@ class TestCheckoutBranch:
 
 
 class TestCommitStep:
+    def test_code_commit_failure_returns_message_and_skips_chore(self, executor):
+        calls = []
+
+        def fake_git(*args):
+            calls.append(args)
+            if args[:2] == ("diff", "--cached"):
+                return MagicMock(returncode=1)
+            if args[0] == "commit":
+                return MagicMock(
+                    returncode=1, stdout="\x1b[0;31mruff: F401 unused import\x1b[0m", stderr=""
+                )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        executor._run_git = fake_git
+
+        err = executor._commit_step(2, "ui")
+
+        assert "코드 커밋 실패" in err
+        assert "F401" in err
+        assert "\x1b" not in err
+        assert len([c for c in calls if c[0] == "commit"]) == 1
+
+    def test_success_returns_none(self, executor):
+        executor._run_git = lambda *a: MagicMock(returncode=0, stdout="", stderr="")
+        assert executor._commit_step(2, "ui") is None
+
     def test_two_phase_commit(self, executor):
         calls = []
 
@@ -470,8 +497,11 @@ class TestInvokeClaude:
         assert "-p" in cmd
         assert "--dangerously-skip-permissions" in cmd
         assert "--output-format" in cmd
-        assert "PREAMBLE" in cmd[-1]
-        assert "UI를 구현하세요" in cmd[-1]
+        # 프롬프트는 argv가 아니라 stdin으로 전달한다 (인자 길이 제한, stdin 대기 회피)
+        prompt = mock_run.call_args[1]["input"]
+        assert "PREAMBLE" in prompt
+        assert "UI를 구현하세요" in prompt
+        assert not any("PREAMBLE" in arg for arg in cmd)
 
     def test_saves_output_json(self, executor):
         mock_result = MagicMock(returncode=0, stdout='{"ok": true}', stderr="")
@@ -769,10 +799,13 @@ class TestExecuteSingleStep:
     @pytest.fixture
     def run(self, executor, phase_dir):
         """session(index_dict) 가 step 세션의 index 수정을 흉내낸다. 호출 기록을 반환."""
-        rec = {"prompts": [], "commits": []}
-        executor._commit_step = lambda num, name, outcome="completed": rec["commits"].append(
-            outcome
-        )
+        rec = {"prompts": [], "commits": [], "commit_errors": []}
+
+        def fake_commit(num, name, outcome="completed"):
+            rec["commits"].append(outcome)
+            return rec["commit_errors"].pop(0) if rec["commit_errors"] else None
+
+        executor._commit_step = fake_commit
 
         def setup(session, ac="true", raw_session=None):
             (phase_dir / "step2.md").write_text(STEP_MD_WITH_AC.format(ac=ac))
@@ -871,3 +904,48 @@ class TestExecuteSingleStep:
             executor._execute_single_step(self.STEP, "")
         assert exc_info.value.code == 1
         assert rec["prompts"] == []
+
+    def test_code_commit_failure_is_retried_with_hook_output(self, executor, run):
+        rec = run(lambda s: s.update(status="completed", summary="ok"))
+        rec["commit_errors"].append("코드 커밋 실패 (exit 1):\nruff E999")
+        assert executor._execute_single_step(self.STEP, "") is True
+        assert rec["commits"] == ["completed", "completed"]
+        assert "ruff E999" in rec["prompts"][1]
+        assert "completed_at" in self._step(executor)
+
+    def test_elapsed_is_reported(self, executor, run, capsys):
+        run(lambda s: s.update(status="completed", summary="ok"))
+        orig = executor._invoke_claude
+
+        def slow_invoke(step, preamble):
+            time.sleep(1.05)
+            return orig(step, preamble)
+
+        executor._invoke_claude = slow_invoke
+        executor._execute_single_step(self.STEP, "")
+        assert "[1s]" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# _finalize
+# ---------------------------------------------------------------------------
+
+
+class TestFinalize:
+    def test_commit_failure_exits_without_push(self, executor):
+        calls = []
+
+        def fake_git(*args):
+            calls.append(args)
+            if args[:2] == ("diff", "--cached"):
+                return MagicMock(returncode=1)
+            if args[0] == "commit":
+                return MagicMock(returncode=1, stdout="hook failed", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        executor._run_git = fake_git
+        executor._auto_push = True
+        with pytest.raises(SystemExit) as exc_info:
+            executor._finalize()
+        assert exc_info.value.code == 1
+        assert not any(c[0] == "push" for c in calls)

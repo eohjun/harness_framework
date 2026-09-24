@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
+# git 훅 출력의 색상 코드 — index.json과 재시도 프롬프트에 섞이지 않게 제거한다
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 @contextlib.contextmanager
@@ -154,7 +156,10 @@ class StepExecutor:
             print(r.stdout.rstrip())
             sys.exit(1)
 
-    def _commit_step(self, step_num: int, step_name: str, outcome: str = "completed"):
+    def _commit_step(
+        self, step_num: int, step_name: str, outcome: str = "completed"
+    ) -> Optional[str]:
+        """코드와 메타데이터를 나눠 커밋한다. 코드 커밋이 실패하면 (pre-commit 훅 등) 에러 메시지를 반환한다."""
         output_rel = f"phases/{self._phase_dir_name}/step{step_num}-output.json"
         index_rel = f"phases/{self._phase_dir_name}/index.json"
 
@@ -170,17 +175,19 @@ class StepExecutor:
                     phase=self._phase_name, num=step_num, name=step_name, outcome=outcome
                 )
             r = self._run_git("commit", "-m", msg)
-            if r.returncode == 0:
-                print(f"  Commit: {msg}")
-            else:
-                print(f"  WARN: 코드 커밋 실패: {r.stderr.strip()}")
+            if r.returncode != 0:
+                output = ANSI_RE.sub("", r.stdout + r.stderr)
+                return f"코드 커밋 실패 (exit {r.returncode}):\n{output[-2000:]}"
+            print(f"  Commit: {msg}")
 
         self._run_git("add", "-A")
         if self._run_git("diff", "--cached", "--quiet").returncode != 0:
             msg = self.CHORE_MSG.format(phase=self._phase_name, num=step_num)
             r = self._run_git("commit", "-m", msg)
             if r.returncode != 0:
-                print(f"  WARN: housekeeping 커밋 실패: {r.stderr.strip()}")
+                # phases/ 파일만 남으므로 다음 커밋이 함께 담는다
+                print(f"  WARN: housekeeping 커밋 실패: {(r.stdout + r.stderr).strip()[-500:]}")
+        return None
 
     # --- top-level index ---
 
@@ -208,11 +215,13 @@ class StepExecutor:
         sections = []
         claude_md = ROOT / "CLAUDE.md"
         if claude_md.exists():
-            sections.append(f"## 프로젝트 규칙 (CLAUDE.md)\n\n{claude_md.read_text()}")
+            sections.append(
+                f"## 프로젝트 규칙 (CLAUDE.md)\n\n{claude_md.read_text(encoding='utf-8')}"
+            )
         docs_dir = ROOT / "docs"
         if docs_dir.is_dir():
             for doc in sorted(docs_dir.glob("*.md")):
-                sections.append(f"## {doc.stem}\n\n{doc.read_text()}")
+                sections.append(f"## {doc.stem}\n\n{doc.read_text(encoding='utf-8')}")
         return "\n\n---\n\n".join(sections) if sections else ""
 
     @staticmethod
@@ -262,7 +271,7 @@ class StepExecutor:
             print(f"  ERROR: {step_file} not found")
             sys.exit(1)
 
-        prompt = preamble + step_file.read_text()
+        prompt = preamble + step_file.read_text(encoding="utf-8")
         timed_out = False
         try:
             result = subprocess.run(
@@ -272,8 +281,8 @@ class StepExecutor:
                     "--dangerously-skip-permissions",
                     "--output-format",
                     "json",
-                    prompt,
                 ],
+                input=prompt,
                 cwd=self._root,
                 capture_output=True,
                 text=True,
@@ -302,7 +311,7 @@ class StepExecutor:
             "stderr": stderr,
         }
         out_path = self._phase_dir / f"step{step_num}-output.json"
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(output, f, indent=2, ensure_ascii=False)
 
         return output
@@ -388,6 +397,13 @@ class StepExecutor:
             return f"step 세션 비정상 종료 (exit {output.get('exitCode')}): {output.get('stderr', '')[-500:]}"
         return "Step did not update status"
 
+    def _commit_wip_or_warn(self, step_num: int, step_name: str, outcome: str):
+        err = self._commit_step(step_num, step_name, outcome=outcome)
+        if err:
+            print(
+                f"  WARN: 부분 작업 커밋 실패 — 재실행 전에 직접 commit 또는 stash가 필요합니다.\n{err}"
+            )
+
     def _execute_single_step(self, step: dict, guardrails: str) -> bool:
         """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 프로세스를 종료한다."""
         step_num, step_name = step["step"], step["name"]
@@ -395,7 +411,7 @@ class StepExecutor:
         if not step_file.exists():
             print(f"  ERROR: {step_file} not found")
             sys.exit(1)
-        ac_script = self._extract_ac(step_file.read_text())
+        ac_script = self._extract_ac(step_file.read_text(encoding="utf-8"))
         if ac_script is None:
             print(f"  ERROR: {step_file}의 '## Acceptance Criteria'에 ```bash 블록이 없습니다.")
             sys.exit(1)
@@ -416,7 +432,7 @@ class StepExecutor:
             snapshot = self._index_file.read_text(encoding="utf-8")
             with progress_indicator(tag) as pi:
                 output = self._invoke_claude(step, preamble)
-                elapsed = int(pi.elapsed)
+            elapsed = int(pi.elapsed)
 
             index, err_msg = self._reload_index(snapshot)
             s = next(x for x in index["steps"] if x["step"] == step_num)
@@ -428,9 +444,10 @@ class StepExecutor:
                 if err_msg is None:
                     s["completed_at"] = ts
                     self._write_json(self._index_file, index)
-                    self._commit_step(step_num, step_name)
-                    print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]")
-                    return True
+                    err_msg = self._commit_step(step_num, step_name)
+                    if err_msg is None:
+                        print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]")
+                        return True
 
             if status == "blocked":
                 s["blocked_at"] = ts
@@ -438,7 +455,7 @@ class StepExecutor:
                 print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
                 print(f"    Reason: {s.get('blocked_reason', '')}")
                 self._update_top_index("blocked")
-                self._commit_step(step_num, step_name, outcome="blocked")
+                self._commit_wip_or_warn(step_num, step_name, "blocked")
                 sys.exit(2)
 
             if err_msg is None:
@@ -446,8 +463,8 @@ class StepExecutor:
 
             if attempt < self.MAX_RETRIES:
                 s["status"] = "pending"
-                s.pop("error_message", None)
-                s.pop("summary", None)
+                for key in ("error_message", "summary", "completed_at"):
+                    s.pop(key, None)
                 self._write_json(self._index_file, index)
                 prev_error = err_msg
                 print(f"  ↻ Step {step_num}: retry {attempt}/{self.MAX_RETRIES} — {err_msg}")
@@ -461,7 +478,7 @@ class StepExecutor:
                 )
                 print(f"    Error: {err_msg}")
                 self._update_top_index("error")
-                self._commit_step(step_num, step_name, outcome="error")
+                self._commit_wip_or_warn(step_num, step_name, "error")
                 sys.exit(1)
 
         return False  # unreachable
@@ -493,8 +510,10 @@ class StepExecutor:
         if self._run_git("diff", "--cached", "--quiet").returncode != 0:
             msg = f"chore({self._phase_name}): mark phase completed"
             r = self._run_git("commit", "-m", msg)
-            if r.returncode == 0:
-                print(f"  ✓ {msg}")
+            if r.returncode != 0:
+                print(f"\n  ERROR: 완료 커밋 실패: {(r.stdout + r.stderr).strip()[-2000:]}")
+                sys.exit(1)
+            print(f"  ✓ {msg}")
 
         if self._auto_push:
             branch = f"feat-{self._phase_name}"
