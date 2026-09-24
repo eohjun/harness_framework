@@ -116,9 +116,9 @@ class StepExecutor:
 
     # --- git ---
 
-    def _run_git(self, *args, errors: Optional[str] = None) -> subprocess.CompletedProcess:
+    def _run_git(self, *args, text: bool = True) -> subprocess.CompletedProcess:
         cmd = ["git", *args]
-        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True, errors=errors)
+        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=text)
 
     def _checkout_branch(self):
         branch = f"feat-{self._phase_name}"
@@ -398,7 +398,7 @@ class StepExecutor:
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
-            # -diff/binary 속성으로 추가된 줄이 숨지 않게 한다 — 바이너리 바이트는 replace로 디코딩
+            # -diff/binary 속성으로 추가된 줄이 숨지 않게 한다
             "--text",
             "--src-prefix=a/",
             "--dst-prefix=b/",
@@ -406,10 +406,12 @@ class StepExecutor:
             ".",
             ":(exclude)phases",
             ":(exclude)*.md",
-            errors="replace",
-        ).stdout
+            text=False,
+        ).stdout.decode("utf-8", "replace")
         hits, path, line_no, in_header = [], None, 0, False
-        for line in diff.splitlines():
+        # text 모드는 \r을, splitlines()는 \x0c 등을 줄바꿈으로 취급해 바이너리 바이트가 헤더로 읽히거나
+        # 주석이 줄에서 떨어져 나간다 — bytes로 받아 \n으로만 나눈다
+        for line in diff.split("\n"):
             if line.startswith("diff --git "):
                 path, in_header = None, True
             elif in_header and line.startswith("+++ "):

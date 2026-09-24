@@ -1066,6 +1066,20 @@ class TestFindSuppressions:
         (repo / "i.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe")
         assert executor._find_suppressions() is None
 
+    @pytest.mark.parametrize("data", [b"\x00\r@@ junk\xff", b"\x00\x0cdiff --git x\n\x0c+++ z\x00"])
+    def test_binary_bytes_are_not_parsed_as_diff_lines(self, executor, repo, data):
+        # \r·\x0c 뒤의 바이트가 hunk·파일 헤더로 읽히면 크래시하거나 헤더 오류로 막힌다
+        (repo / "blob.bin").write_bytes(data)
+        assert executor._find_suppressions() is None
+
+    @pytest.mark.parametrize("sep", ["\x0b", "\x0c", "\x1c"])
+    def test_control_char_does_not_hide_suppression(self, executor, repo, sep):
+        # str.splitlines()는 이 문자에서도 줄을 나눠 뒤의 주석을 놓친다 — ruff는 \x0c 뒤 noqa도 인정한다
+        (repo / "a.py").write_text(f"x = 1  {sep}# noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a.py:1:" in err
+
     def test_detects_suppression_in_non_ascii_path(self, executor, repo):
         # core.quotePath 기본값이면 헤더가 '+++ "b/\355\225\234...py"'로 따옴표 처리된다
         (repo / "한글.py").write_text("x = 1  # noqa\n")
