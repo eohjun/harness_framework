@@ -49,7 +49,7 @@ phases/                        # /harness가 생성 (task별 index.json, step{N}
 - `feat-{phase}` 브랜치를 만들거나 checkout한다.
 - step마다 `claude -p --dangerously-skip-permissions` 세션을 띄운다. 프롬프트에는 AGENTS.md, `docs/*.md`, 완료된 step의 summary, 직전 실패 원인이 들어간다.
 - 세션이 `completed`를 보고해도 AC 블록을 `bash -e -o pipefail`로 직접 재실행해 통과해야 완료로 인정한다.
-- step이 추가한 줄(`phases/`, `*.md` 제외)에 lint·타입·포맷 억제 주석(`# noqa`, `# type: ignore`, `eslint-disable`, `@ts-ignore`, `prettier-ignore`, `# fmt: off` 등)이 있으면 커밋하지 않고 재시도한다. 검사는 사용자 git 설정이나 `.gitattributes`(textconv·binary)의 영향을 받지 않으며, git이 경로를 인용하는 파일명(따옴표·탭·백슬래시 포함)은 검사할 수 없어 실패로 처리한다. 린트 설정 변경으로 우회하는 것은 프롬프트 규칙으로만 금지한다.
+- step이 추가한 줄(`phases/`, `*.md` 제외)에 lint·타입·포맷 억제 주석(`# noqa`, `# type: ignore`, `eslint-disable`, `@ts-ignore`, `prettier-ignore`, `# fmt: off` 등)이 있으면 커밋하지 않고 재시도한다. 검사는 사용자 git 설정이나 `.gitattributes`(textconv·binary)의 영향을 받지 않으며, git이 경로를 인용하는 파일명(따옴표·백슬래시, 탭·줄바꿈 등 제어 문자 포함)은 검사할 수 없어 실패로 처리한다. 린트 설정 변경으로 우회하는 것은 프롬프트 규칙으로만 금지한다.
 - 실패하면 원인을 피드백해 새 세션으로 최대 3회 재시도한다. 실패 원인에는 AC 출력, 세션의 `error_message`, 비정상 종료·timeout(30분), index.json 파손, pre-commit 훅에 막힌 커밋이 포함된다.
 - 커밋은 execute.py만 한다. 코드는 `feat(...)`, index.json은 `chore(...)`로 나누고, error·blocked로 끝난 step의 부분 작업은 `wip(...)`로 남긴다.
 

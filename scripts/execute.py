@@ -416,7 +416,8 @@ class StepExecutor:
                 path, in_header = None, True
             elif in_header and line.startswith("+++ "):
                 if line.startswith("+++ b/"):
-                    path = line[6:]
+                    # 공백이 든 경로는 git이 헤더 끝에 탭을 붙인다
+                    path = line[6:].rstrip("\t")
                 elif line != "+++ /dev/null":
                     # 해석 못 한 헤더를 건너뛰면 그 파일의 억제 주석이 조용히 통과한다
                     return (

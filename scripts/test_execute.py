@@ -1087,6 +1087,13 @@ class TestFindSuppressions:
         assert err is not None
         assert "한글.py:1:" in err
 
+    def test_path_with_space_has_no_trailing_tab(self, executor, repo):
+        # 경로에 공백이 있으면 git이 "+++ b/a b.py\t"처럼 헤더 끝에 탭을 붙인다
+        (repo / "a b.py").write_text("x = 1  # noqa\n")
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "a b.py:1:" in err
+
     def test_added_line_starting_with_plus_plus_is_not_a_header(self, executor, repo):
         # "++ y"를 추가하면 diff 줄이 "+++ y"가 된다 — 헤더로 읽으면 뒤 줄을 놓친다
         (repo / "a.py").write_text("x = 1\n++ y\nz = 2  # noqa\n")
