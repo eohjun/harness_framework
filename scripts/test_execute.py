@@ -257,6 +257,12 @@ class TestBuildPreamble:
         assert "git commit/push를 하지 마라" in result
         assert "모든 변경사항을 커밋하라" not in result
 
+    def test_forbids_lint_suppression(self, executor):
+        result = executor._build_preamble("", "")
+        for marker in ("# noqa", "# type: ignore", "eslint-disable", "@ts-ignore"):
+            assert marker in result
+        assert "우회하지 마라" in result
+
     def test_includes_rules(self, executor):
         result = executor._build_preamble("", "")
         assert "작업 규칙" in result
@@ -906,6 +912,14 @@ class TestExecuteSingleStep:
         assert exc_info.value.code == 1
         assert rec["prompts"] == []
 
+    def test_suppression_is_retried_before_commit(self, executor, run):
+        rec = run(lambda s: s.update(status="completed", summary="ok"))
+        found = ["억제 주석 추가 금지 (작업 규칙 7) — ...:\nhello.py:1: print('hi')  # noqa"]
+        executor._find_suppressions = lambda: found.pop(0) if found else None
+        assert executor._execute_single_step(self.STEP, "") is True
+        assert rec["commits"] == ["completed"]  # 억제 주석이 남은 시도는 커밋하지 않는다
+        assert "hello.py:1" in rec["prompts"][1]
+
     def test_code_commit_failure_is_retried_with_hook_output(self, executor, run):
         rec = run(lambda s: s.update(status="completed", summary="ok"))
         rec["commit_errors"].append("코드 커밋 실패 (exit 1):\nruff E999")
@@ -950,3 +964,66 @@ class TestFinalize:
             executor._finalize()
         assert exc_info.value.code == 1
         assert not any(c[0] == "push" for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# _find_suppressions (real git)
+# ---------------------------------------------------------------------------
+
+
+class TestFindSuppressions:
+    @pytest.fixture
+    def repo(self, executor, tmp_project):
+        def git(*args):
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                cwd=tmp_project,
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q")
+        (tmp_project / "old.txt").write_text("x = 1  # noqa: E501\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        return tmp_project
+
+    @pytest.mark.parametrize(
+        "name, content",
+        [
+            ("a.py", 'print("hi")  # noqa: T201\n'),
+            ("a.py", "x: int = 'a'  # type: ignore\n"),
+            ("a.py", "x = 1  # pyright: ignore\n"),
+            ("a.py", "# pylint: disable=invalid-name\n"),
+            ("src/a.ts", "// @ts-ignore\nconst x: number = 'a';\n"),
+            ("src/a.ts", "// @ts-expect-error\n"),
+            ("src/a.tsx", "/* eslint-disable */\n"),
+            ("src/a.js", "// biome-ignore lint: reason\n"),
+        ],
+    )
+    def test_detects_added_suppression(self, executor, repo, name, content):
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        err = executor._find_suppressions()
+        assert err is not None
+        assert "작업 규칙 7" in err
+        assert f"{name}:" in err
+
+    def test_reports_line_number(self, executor, repo):
+        (repo / "old.txt").write_text("x = 1  # noqa: E501\ny = 2\nz = 3  # noqa\n")
+        err = executor._find_suppressions()
+        assert "old.txt:3: z = 3  # noqa" in err
+        assert "old.txt:1" not in err  # 기존 줄은 이번 step이 추가한 것이 아니다
+
+    def test_clean_change_passes(self, executor, repo):
+        (repo / "a.py").write_text("import sys\n\nsys.stdout.write('hi')\n")
+        assert executor._find_suppressions() is None
+
+    def test_docs_and_phases_are_excluded(self, executor, repo):
+        (repo / "docs" / "lint.md").write_text("`# noqa`를 쓰지 마라\n")
+        (repo / "phases" / "0-mvp" / "step9.md").write_text("# noqa 금지\n")
+        assert executor._find_suppressions() is None
+
+    def test_no_changes_passes(self, executor, repo):
+        assert executor._find_suppressions() is None

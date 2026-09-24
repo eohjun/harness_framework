@@ -60,6 +60,10 @@ class StepExecutor:
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     WIP_MSG = "wip({phase}): step {num} — {name} ({outcome})"
     CHORE_MSG = "chore({phase}): step {num} output"
+    SUPPRESSION_RE = re.compile(
+        r"#\s*noqa\b|#\s*type:\s*ignore|#\s*pyright:\s*ignore|#\s*pylint:\s*disable"
+        r"|eslint-disable|@ts-(?:ignore|nocheck|expect-error)|biome-ignore"
+    )
     TZ = timezone(timedelta(hours=9))
 
     def __init__(self, phase_dir_name: str, *, auto_push: bool = False):
@@ -260,7 +264,9 @@ class StepExecutor:
             f'   - 수정해도 AC를 통과시키지 못함 → "error" + "error_message"에 실패 원인을 구체적으로 기록 '
             f"(execute.py가 이 메시지를 전달해 새 세션으로 재시도한다)\n"
             f'   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → "blocked" + "blocked_reason" 기록 후 즉시 중단\n'
-            f"6. git commit/push를 하지 마라. 커밋은 execute.py가 step 종료 후 코드와 메타데이터를 나눠 수행한다.\n\n---\n\n"
+            f"6. git commit/push를 하지 마라. 커밋은 execute.py가 step 종료 후 코드와 메타데이터를 나눠 수행한다.\n"
+            f"7. lint·타입 검사를 억제 주석(`# noqa`, `# type: ignore`, `eslint-disable`, `@ts-ignore` 등)이나 "
+            f'린트 설정 변경으로 우회하지 마라. 규칙 위반은 코드를 고쳐서 해결하고, 고칠 수 없으면 "error"로 기록하고 사유를 남겨라.\n\n---\n\n'
         )
 
     # --- Claude 호출 ---
@@ -380,6 +386,36 @@ class StepExecutor:
             return None
         return f"AC 재검증 실패 (exit {r.returncode}):\n{(r.stdout + r.stderr)[-2000:]}"
 
+    def _find_suppressions(self) -> Optional[str]:
+        """이번 step이 추가한 줄에서 lint·타입 억제 주석을 찾는다 (작업 규칙 7의 강제). 없으면 None.
+        phases/와 문서(*.md)는 규칙을 설명할 수 있으므로 제외한다."""
+        self._run_git("add", "-A")
+        diff = self._run_git(
+            "diff",
+            "--cached",
+            "-U0",
+            "--no-color",
+            "--",
+            ".",
+            ":(exclude)phases",
+            ":(exclude)*.md",
+        ).stdout
+        hits, path, line_no = [], None, 0
+        for line in diff.splitlines():
+            if line.startswith("+++ "):
+                path = line[6:] if line.startswith("+++ b/") else None
+            elif line.startswith("@@"):
+                line_no = int(re.search(r"\+(\d+)", line).group(1))
+            elif line.startswith("+"):
+                if path and self.SUPPRESSION_RE.search(line):
+                    hits.append(f"{path}:{line_no}: {line[1:].strip()}")
+                line_no += 1
+        if not hits:
+            return None
+        return "억제 주석 추가 금지 (작업 규칙 7) — 주석을 지우고 코드를 고쳐라:\n" + "\n".join(
+            hits[:20]
+        )
+
     # --- 실행 루프 ---
 
     def _reload_index(self, snapshot: str) -> tuple:
@@ -442,7 +478,7 @@ class StepExecutor:
             ts = self._stamp()
 
             if status == "completed":
-                err_msg = self._run_ac(ac_script)
+                err_msg = self._run_ac(ac_script) or self._find_suppressions()
                 if err_msg is None:
                     s["completed_at"] = ts
                     self._write_json(self._index_file, index)
